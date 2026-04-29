@@ -1,0 +1,1 @@
+List(Map(city -> Chesterfield, street -> 4 Lathem Lane, postal_code_short -> 08515, state -> NJ), Map(city -> Chesterfield, state -> NJ, postal_code_extra -> 9770, street -> 4 Lathem Lane, postal_code_short -> 08515), Map(city -> Chesterfield, postal_code_extra -> 9770), Map(street -> 4 Lathem Lane, postal_code_short -> 08515, state -> NJ))
