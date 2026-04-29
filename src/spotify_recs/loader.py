@@ -118,8 +118,10 @@ def find_history_files(raw_dir: Path) -> list[Path]:
     candidates = []
     # Extended format
     candidates.extend(raw_dir.rglob("Streaming_History_Audio_*.json"))
-    # Account Data format
-    candidates.extend(raw_dir.rglob("StreamingHistory*.json"))
+    # Account Data — legacy short form (StreamingHistory0.json, ...)
+    candidates.extend(raw_dir.rglob("StreamingHistory[0-9]*.json"))
+    # Account Data — current form, music only (skip StreamingHistory_podcast_*.json)
+    candidates.extend(raw_dir.rglob("StreamingHistory_music_*.json"))
     return sorted(candidates)
 
 

@@ -1,6 +1,6 @@
-# spotify-recs
+# New_Soundz
 
-Personal Spotify analytics + artist recommendation engine.
+Personal Spotify analytics + artist recommendation engine. Hybrid CF using Last.fm 1K users as the backbone with my own listening history embedded as one extra user, trained with [LensKit](https://lkpy.lenskit.org/stable/).
 
 ## Setup
 
@@ -40,9 +40,9 @@ This creates `.venv/` and installs everything. VS Code should auto-detect the in
 ## Project structure
 
 ```
-spotify-recs/
+New_Soundz/
 ├── data/
-│   ├── raw/          # Spotify JSON exports (gitignored)
+│   ├── raw/          # Spotify JSON exports + Last.fm dataset (gitignored)
 │   └── processed/    # Cleaned Parquet files (gitignored)
 ├── src/spotify_recs/ # Importable package
 │   └── loader.py     # Day 1

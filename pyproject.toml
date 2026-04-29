@@ -10,7 +10,6 @@ dependencies = [
     "numpy>=1.26",
     # Recommender
     "lenskit>=2025.3",
-    "implicit>=0.7.2",  # for ALS/BPR backends
     # Spotify API (day 4)
     "spotipy>=2.24",
     "python-dotenv>=1.0",
