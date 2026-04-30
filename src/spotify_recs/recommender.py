@@ -117,17 +117,19 @@ def recommend_for_history(
 ) -> pd.DataFrame:
     """Top-N recs for a new (cold-start) user via fold-in inference.
 
-    `artist_weights`: dict of {artist_id: weight}. The weight matters — it
-    becomes the implicit feedback signal that gets folded into the latent
-    space. Use the same weighting scheme you used at training time
-    (raw counts here, since we trained on play counts).
+    `artist_weights`: dict of {artist_id: weight}. Weights are passed via the
+    `rating` field on the ItemList — LensKit's fold-in only reads them when
+    `use_ratings=True` on the scorer config (we flip it here for inference).
 
     `exclude_seen`: drop the user's own input artists from the result.
     """
     item_ids = list(artist_weights.keys())
     weights = [float(artist_weights[i]) for i in item_ids]
-    history = ItemList(item_ids=item_ids, score=weights, ordered=False)
+    history = ItemList(item_ids=item_ids, rating=weights, ordered=False)
     query = RecQuery(history_items=history)
+
+    scorer = pipeline.node("scorer").component
+    scorer.config.use_ratings = True
 
     items: ItemList = recommend(pipeline, query, n=n + (len(item_ids) if exclude_seen else 0))
     df = _itemlist_to_df(items)

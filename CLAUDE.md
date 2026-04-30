@@ -14,7 +14,7 @@ Personal Spotify analytics + artist recommendation engine. Portfolio piece for D
 
 1. **CF backbone**: ALS trained on Last.fm 360K (one-time, offline). 358,872 users × 267,739 artists, density 0.0181%. LensKit 2026.1.0 pipeline API.
 2. **Fold-in inference** for new users at request time (single matrix solve, sub-100ms). User vector built from Spotify Top Artists short_term (4w) + medium_term (6m), weighted toward short_term.
-3. **Proxy substitution** for unmatched artists: query Last.fm API `artist.getSimilar`, intersect with CF vocab, contribute decayed weights to user vector. Decay = 0.3 starting point. **Two-hop substitution worth doing** when one-hop returns empty.
+3. **Proxy substitution** for unmatched artists: query Last.fm API `artist.getSimilar`, intersect with CF vocab, contribute decayed weights to user vector. Decay = 0.3 starting point — applied as the `rating` field value on proxy entries while direct seeds sit at 1.0 (LensKit fold-in only honors weights when `use_ratings=True`; `recommend_for_history` flips this at inference). **Two-hop substitution worth doing** when one-hop returns empty.
 4. **Content-based fallback scorer** kicks in when user vector is too sparse (CF can't be trusted). Scores by genre-tag overlap.
 5. **Multi-source genre enrichment**, in priority order: HF Spotify Tracks dataset (cheapest) → Last.fm `artist.getTopTags` (NOT `getInfo` — getInfo only returns ~5) → Spotify API genres → Wikidata (only if 1-3 leave too many gaps). One unified SQLite cache table per artist; merged dedup'd genre list is the content vector.
 
