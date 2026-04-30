@@ -2,9 +2,9 @@
 
 Personal Spotify analytics + artist recommendation engine. Portfolio piece for Data Science / ML co-op interviews. Solo dev (rquinlan3), uv-managed Python project.
 
-## What this actually is now (not what the original prompt said)
+## What this actually is
 
-- **Multi-user webapp**, not a personal-data dashboard. Users link their Spotify account via OAuth, see their own analytics, get their own recommendations.
+- **Multi-user webapp** Users link their Spotify account via OAuth, see their own analytics, get their own recommendations.
 - **Streamlit** frontend, deployed to Streamlit Cloud (planned). Spotify dev mode caps usage at 25 manually allowlisted users — accept this and lean on a "demo mode" + screencast for portfolio viewing. App is framed as "under development."
 - **No Quarto writeup.** Project page goes on user's Quarto portfolio when finished.
 
