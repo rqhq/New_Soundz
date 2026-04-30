@@ -47,23 +47,46 @@ SQLite. One row per artist with columns for each genre source separately + merge
 
 ```
 src/spotify_recs/
-  loader.py     # Day 1: Spotify export → parquet (DONE)
-  align.py      # Day 2: Last.fm 360K + artist matching (DONE)
-notebooks/      # Exploration
-app/            # Streamlit (Day 5)
-reports/        # currently empty, no Quarto
-data/raw/       # Spotify exports + lastfm_360k.parquet (TSV deleted post-conversion)
-data/processed/ # all_streams, real_plays, plays_by_artist, plays_by_track, daily_listening, interactions, artist_lookup, my_artist_matches
+  loader.py       # Day 1: Spotify export → parquet (DONE)
+  align.py        # Day 2: Last.fm 360K + artist matching (DONE)
+  recommender.py  # Day 3: ALS train + fold-in inference (DONE)
+  lastfm_api.py   # Day 3: Last.fm API client w/ rate limit + tag denylist (DONE)
+  cache.py        # Day 3: SQLite artist metadata cache, lazy-populated (DONE)
+notebooks/        # Exploration
+app/              # Streamlit (Day 5)
+reports/          # currently empty, no Quarto
+models/           # als.pkl (388MB pickled trained pipeline)
+data/raw/         # Spotify exports + lastfm_360k.parquet
+data/processed/   # parquet outputs + artist_cache.sqlite
 ```
 
 Workflow: `uv run python -m spotify_recs.<module>`. Always `uv run`, never bare python.
 
+## LensKit 2026.1.0 specifics (verified by inspecting installed source)
+
+- `from_interactions_df(df)` builds a `Dataset` — auto-detects `user_id`/`item_id` columns. Pass `rating_col="count"` if needed; ImplicitMFScorer treats it as confidence weighting via `c_ui = 1 + alpha * count`.
+- `ImplicitMFScorer` config defaults: `embedding_size=64, epochs=10, regularization=0.1, weight=40` (alpha). `use_ratings=False` is the right setting for implicit data.
+- Pipeline build: `pipe = topn_pipeline(scorer, n=200); pipe.train(ds)`.
+- **Fold-in cold-start path**: `RecQuery(history_items=ItemList(item_ids=[...], score=[weights...]))`, then `recommend(pipeline, query, n=20)`. The `history_items` interface is what powers all new-user inference — no manual `new_user_embedding` call needed.
+- `RecQuery` API changed in 2026.1: arguments are keyword-only, the historical `user_items` attribute was removed. Don't trust pre-2026.1 examples.
+
+## Day 3 findings worth remembering
+
+- **Junk artist filter list** lives in `recommender.JUNK_NORM_NAMES`. Catches `[unknown]`, `various artists`, `soundtrack`, etc. — these dominate ALS scores otherwise (2.4M+ plays each).
+- **ALS popularity bias** in raw "me" recs (Smash Mouth, Katy Perry, Nickelback) but **fold-in recs are visibly cleaner** — focused 5-artist seed produced very coherent neighbors. This is the real-user runtime path so quality is fine; no fix needed.
+- **Proxy substitution feasibility validated end-to-end**:
+  - Strong (>15/50 proxies in CF vocab): Tyler, The Creator (17), Frank Ocean (17), Anderson .Paak (18), Kendrick Lamar (22)
+  - Decent (~12/50): JPEGMAFIA
+  - Weak (≤4/50): HYUKOH (Korean indie), Malcolm Todd (2024) — these are exactly the cases where two-hop + content fallback earn their keep
+- **Last.fm tags work universally** — every test artist returned 6+ usable tags after denylist filtering. Content scorer has signal.
+- **Tag normalization needed** before merging: case dedup (`Hip-Hop` vs `hip hop`).
+
 ## Status / next up
 
-- ✅ Day 1: streaming history loader. 103,142 events → 28,752 real plays (≥30s) → 3,678 artists. Year of data: 2024-11-16 → 2025-11-16. Skip rate 72%.
-- ✅ Day 2: Last.fm 360K aligned. 50.6% play-weighted match coverage (the structural ceiling). interactions.parquet + artist_lookup.parquet written.
-- ⏭ Day 3 (next): Train ALS on Last.fm 360K. Implement fold-in. Scaffold Last.fm API client + SQLite cache. Smoke-test `getSimilar` on a few unmatched artists end-to-end.
-- Day 4: Spotify OAuth + multi-source genre enrichment + content fallback scorer.
+- ✅ Day 1: streaming history loader.
+- ✅ Day 2: Last.fm 360K aligned, 50.6% play-weighted match coverage.
+- ✅ Day 3: ALS trained (`models/als.pkl`), fold-in path tested, Last.fm cache scaffolded, proxy substitution validated end-to-end on 7 unmatched artists.
+- ⏭ Day 4 (next): Spotify OAuth (Spotipy auth code flow with PKCE) → fetch real user's top short_term + medium_term artists → wire match-or-proxy logic into fold-in path → multi-source genre enrichment (HF dataset, Spotify genres, optionally Wikidata) → content fallback scorer when CF coverage is too low.
 - Day 5: Streamlit app (analytics + recs + demo mode).
 - Day 6: Deploy + privacy policy + Spotify dev dashboard config + screencast.
 
