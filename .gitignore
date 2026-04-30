@@ -4,6 +4,9 @@ data/raw/*
 data/processed/*
 !data/processed/.gitkeep
 
+# Models (large pickled artifacts)
+models/
+
 # Python
 __pycache__/
 *.py[cod]
