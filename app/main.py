@@ -94,6 +94,8 @@ def _get_authenticated_client() -> spotipy.Spotify | None:
     )
     return None
 
+def plots_1 ()
+
 
 def main() -> None:
     sp = _get_authenticated_client()
