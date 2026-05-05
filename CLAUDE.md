@@ -39,6 +39,10 @@ SQLite. One row per artist with columns for each genre source separately + merge
 - **Fuzzy artist matching uses `fuzz.ratio` at threshold 95.** `token_set_ratio` was a disaster (matched "Malcolm Todd" → "todd" at score 100). At 92 we still got "George Clanton" → "george clinton" which would misroute 248 plays of vaporwave to P-Funk. Don't lower the threshold without re-auditing.
 - **Spotify API in dev mode caps at 25 hand-allowlisted users.** Submit Extension review for production access (2-6 weeks). Demo mode + screencast for portfolio.
 - **Privacy policy + ToS pages are required** for Spotify OAuth approval.
+- **Streamlit OAuth must use `SpotifyOAuth` (auth-code + client_secret), NOT `SpotifyPKCE`.** PKCE keeps the code_verifier in memory; when the browser navigates to Spotify and back, Streamlit can lose its session and a new auth_manager generates a fresh verifier — exchange fails with `code_verifier was incorrect`. Auth-code flow has no per-request secret to lose. CLI (`spotify_auth.py`) still uses PKCE because it has a stable in-process listener.
+- **macOS AirPlay Receiver claims ports 5000 and 7000.** Either toggle off (System Settings → General → AirDrop & Handoff → AirPlay Receiver), or use a different port. Streamlit currently runs on 8888; CLI OAuth listener uses 5000 (requires AirPlay off).
+- **Spotify dashboard rejects `http://localhost`** as not-secure but accepts `http://127.0.0.1:<port>/<path>`. Always use the IP literal.
+- **Browser OAuth state caches in cookies.** When changing OAuth flow type (PKCE↔auth-code) or app config, the browser can replay stale OAuth state and trigger `error=server_error` on Spotify's side. Test in incognito or clear cookies for `accounts.spotify.com`.
 - **`pyarrow.parquet` needs explicit import** — `pa.parquet` won't work.
 - **`implicit` package fails to build from source on Apple Silicon** with current dependencies. Already removed from pyproject.toml. LensKit's own ALS doesn't need it.
 - **`uv sync` warning** about `tool.uv.dev-dependencies` deprecation — non-blocking, fix when convenient.
@@ -86,8 +90,13 @@ Workflow: `uv run python -m spotify_recs.<module>`. Always `uv run`, never bare 
 - ✅ Day 1: streaming history loader.
 - ✅ Day 2: Last.fm 360K aligned, 50.6% play-weighted match coverage.
 - ✅ Day 3: ALS trained (`models/als.pkl`), fold-in path tested, Last.fm cache scaffolded, proxy substitution validated end-to-end on 7 unmatched artists.
-- ⏭ Day 4 (next): Spotify OAuth (Spotipy auth code flow with PKCE) → fetch real user's top short_term + medium_term artists → wire match-or-proxy logic into fold-in path → multi-source genre enrichment (HF dataset, Spotify genres, optionally Wikidata) → content fallback scorer when CF coverage is too low.
-- Day 5: Streamlit app (analytics + recs + demo mode).
+- 🚧 Day 4 in progress:
+  - ✅ Spotify OAuth (Spotipy PKCE; redirect `http://127.0.0.1:5000/callback`; macOS AirPlay Receiver must be off or port reassigned)
+  - ✅ Match-or-proxy router (`routing.py::route_artists`, threshold 95, decay 0.3)
+  - ✅ Reverse-proxy expansion (`routing.py::expand_to_modern`) — surfaces post-2009 artists by walking Last.fm similars from CF recs. Live test: 100% input coverage on rqhq's account, ~75% of "modern picks" are post-2009 contemporary names per user judgment.
+  - ✅ End-to-end CLI rig (`run_demo.py`) wires auth → fetch → route → fold-in → reverse-proxy → two ranked lists.
+  - ⏭ Multi-source genre enrichment + content fallback scorer for sparse vectors (low priority — rqhq's account never triggers it, but still wanted for the 24 other allowlisted users).
+- Day 5: Streamlit app (analytics + recs + demo mode). Open question: how to merge "classic" + "modern" rec lists into one focused output instead of two separate lists. User wants to narrow output count.
 - Day 6: Deploy + privacy policy + Spotify dev dashboard config + screencast.
 
 ## Working preferences

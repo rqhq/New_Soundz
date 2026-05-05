@@ -18,6 +18,9 @@ __pycache__/
 .env
 .env.local
 
+# Spotify OAuth token cache
+.spotify_token_cache.json
+
 # Jupyter
 .ipynb_checkpoints/
 
