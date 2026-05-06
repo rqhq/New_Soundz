@@ -48,6 +48,11 @@ SQLite. One row per artist with columns for each genre source separately + merge
 - **`uv sync` warning** about `tool.uv.dev-dependencies` deprecation — non-blocking, fix when convenient.
 - **`umap.UMAP.transform()` segfaults on Apple Silicon** with current numba/pynndescent versions. The Streamlit UMAP cluster map works around this by doing a single joint `fit_transform` over (background ∪ user seeds ∪ recs) per user, cached for an hour. Don't try to call `transform()` separately.
 - **Streamlit `@st.cache_data` invalidates on the decorated function's source code, not on transitive callees.** When `routing.py::expand_to_modern` gained a `support_seeds` column, in-flight cached results from `_compute_recs` did NOT auto-invalidate because `_compute_recs`'s body was unchanged. The Log out button calls `st.cache_data.clear()` as a workaround; otherwise wait the 1hr TTL or manually clear.
+- **HF Spotify Tracks dataset is playlist-derived and noisy at single-track granularity.** Each track has one `track_genre` (the playlist it was scraped from), so an artist with one track on a "soul" playlist gets tagged soul even if they're hip-hop. Mitigation in `cache.get_merged_genres`: drop HF entries with count==1 when the artist has any tag with count≥3. Artists with only single-count entries (small catalogs) pass through unfiltered.
+- **`plays_by_track.parquet` is single-user data (rqhq's pre-Nov-2024 streaming export).** Joining it onto Spotify's live `/me/top/tracks` for non-rqhq users produces misleading results — even one accidental match (e.g., friend-of-rqhq listening to the same song) shows rqhq's play counts on someone else's row. Feature was attempted, then pulled. Only safe to bring back inside demo mode (Lane A #1) where every viewer is explicitly framed as "viewing rqhq's data."
+- **Genre coloring on UMAP/network was tried and reverted.** The 114-genre HF taxonomy collapses too cleanly to ~12 buckets, but bucket misclassifications (Mos Def→electronic via 'trip hop', Snoop→funk/disco via 'funk', JPEGMAFIA→metal via 'industrial' before weak-tag fallback) produced too many visible errors at the rendered scale. `genre_buckets.py` still exists with a weak-tag-fallback design for future retry; just not wired in. The viz reverted to type-based coloring (green seeds / orange star classics / cyan diamond modern).
+- **`st.fragment(run_every="2s")` powers the now-playing live ticker.** Re-runs only the fragment, not the page; safe-ish on Spotify's API quota for personal-portfolio traffic. Requires Streamlit ≥1.37 (we're on 1.57).
+- **Spotify `long_term` is officially "several years" but in practice ~1 year.** Spotify never announced the change, but community evidence is consistent. UI label was renamed "All time" → "Past year" to be honest.
 
 ## Repo layout
 
@@ -59,12 +64,16 @@ src/spotify_recs/
   lastfm_api.py   # Day 3: Last.fm API client w/ rate limit + tag denylist (DONE)
   cache.py        # Day 3: SQLite artist metadata cache, lazy-populated (DONE)
   routing.py      # Day 4: match-or-proxy router + reverse-proxy expand_to_modern (DONE)
+  hf_genres.py    # Day 5: HF Spotify Tracks dataset → artist→[(genre,count)] lookup (DONE)
+  content_scorer.py  # Day 5: content fallback for sparse users + cache prewarm CLI (DONE)
+  genre_buckets.py   # Day 5: 114→12 high-level bucket map (UNUSED — kept for future)
 notebooks/        # Exploration
 app/
   main.py         # Day 5: Streamlit entrypoint — Overview / Analytics / Recommendations pages
 .streamlit/
   config.toml     # Dark Spotify theme + server.port=8888
-reports/          # currently empty, no Quarto
+reports/
+  project-summary.md  # Portfolio writeup draft (Quarto-ready markdown)
 models/           # als.pkl (388MB pickled trained pipeline)
 data/raw/         # Spotify exports + lastfm_360k.parquet
 data/processed/   # parquet outputs + artist_cache.sqlite
@@ -79,6 +88,10 @@ Workflow: `uv run python -m spotify_recs.<module>`. Always `uv run`, never bare 
 - Pipeline build: `pipe = topn_pipeline(scorer, n=200); pipe.train(ds)`.
 - **Fold-in cold-start path**: `RecQuery(history_items=ItemList(item_ids=[...], score=[weights...]))`, then `recommend(pipeline, query, n=20)`. The `history_items` interface is what powers all new-user inference — no manual `new_user_embedding` call needed.
 - `RecQuery` API changed in 2026.1: arguments are keyword-only, the historical `user_items` attribute was removed. Don't trust pre-2026.1 examples.
+- **`recommend_for_history` now takes two re-ranking knobs:**
+  - `popularity_alpha` (0–1) divides each candidate's score by `‖item_emb‖^alpha`. 0 = raw ALS (popularity-biased), 1 = pure cosine. Pulls 200 candidates from the pipeline (instead of `n+buffer`) so re-ranking has room to surface buried items.
+  - `mmr_lambda` (0.5–1.0) applies greedy Maximal Marginal Relevance over the dampened scores using ALS-cosine for similarity. 1.0 = no diversity step. <1.0 trades relevance for cluster spread. Implementation in `_mmr_rerank`.
+  - Both surfaced as live sliders on the Recommendations page; cache key includes both so each combo recomputes fresh.
 
 ## Day 3 findings worth remembering
 
@@ -101,16 +114,19 @@ Workflow: `uv run python -m spotify_recs.<module>`. Always `uv run`, never bare 
   - ✅ Match-or-proxy router (`routing.py::route_artists`, threshold 95, decay 0.3)
   - ✅ Reverse-proxy expansion (`routing.py::expand_to_modern`) — surfaces post-2009 artists by walking Last.fm similars from CF recs. Live test: 100% input coverage on rqhq's account, ~75% of "modern picks" are post-2009 contemporary names per user judgment. Now also returns a `support_seeds` column listing `(seed_canonical_name, sim_score)` pairs per modern rec — used by the similarity-network viz to draw modern→CF edges.
   - ✅ End-to-end CLI rig (`run_demo.py`) wires auth → fetch → route → fold-in → reverse-proxy → two ranked lists.
-  - ⏭ Multi-source genre enrichment + content fallback scorer for sparse vectors (low priority — rqhq's account never triggers it, but still wanted for the 24 other allowlisted users). Note: this is *also* what would unlock genre-coloring on the UMAP and similarity-network plots; right now their clusters are positional but visually uninterpretable beyond seed/rec/modern color tiers.
-- 🚧 Day 5 in progress (`app/main.py`):
+- ✅ Day 5 (`app/main.py`):
   - ✅ **Overview page**: hero header (avatar + display name + follower count), now-playing strip, top-8 artists as a row of large clickable album-art cards.
-  - ✅ **Analytics page**: KPI row, top genres horizontal bar (Spotify-green Plotly), artist movement table (4w vs 6mo rank with ▲/▼/🆕 markers), top tracks per time range with album thumbnails + popularity progress bars. Listening-clock plot was tried with polar bars and scrapped — the live API's 50-play window is too sparse for it to look good; revisit only when demo mode brings full export.
-  - ✅ **Recommendations page**: Mixed/Classic/Modern toggle on rec list, **UMAP cluster map** (joint `fit_transform` over 1500 popular CF artists + user seeds + classic recs, modern recs excluded since they have no embedding), **artist similarity network** (force-directed via networkx, ALS-cosine edges within CF + Last.fm support edges modern→CF, glowing-halo markers, labels capped to top-18 by score). Network feeds on top-50 classic recs (`classic_expanded`) so modern recs always anchor; rec list still shows top-20.
+  - ✅ **Analytics page**: KPI row, top genres horizontal bar (Spotify-green Plotly), artist movement table (4w vs 6mo rank with ▲/▼/🆕 markers), top tracks per time range with album thumbnails + popularity progress bars. Tab labels: "Last 4 weeks / Last 6 months / Past year" (renamed from "All time"). Listening-clock plot was tried with polar bars and scrapped — the live API's 50-play window is too sparse for it to look good; revisit only when demo mode brings full export.
+  - ✅ **Recommendations page**: Mixed/Classic/Modern toggle on rec list, **α/λ tuning sliders** (popularity dampening + MMR diversity, both wired into `recommend_for_history`), **UMAP cluster map** (joint `fit_transform` over 1500 popular CF artists + user seeds + classic recs, modern recs excluded since they have no embedding), **artist similarity network** (force-directed via networkx, ALS-cosine edges within CF + Last.fm support edges modern→CF, glowing-halo markers, labels capped to top-18 by score). Network feeds on top-50 classic recs (`classic_expanded`) so modern recs always anchor; rec list still shows top-20. UMAP and network markers color by *type* only (seed/classic/modern); genre coloring was tried and reverted (see gotchas).
+  - ✅ **Live now-playing ticker** via `st.fragment(run_every="2s")` — progress bar + `m:ss / m:ss` caption update without page rerun.
   - ✅ Dark Spotify theme via `.streamlit/config.toml` (#1DB954 primary, #121212 base).
-  - ⏭ Plays/minutes per top track — deferred to demo mode (Spotify API exposes ranking but not counts; only the export has them).
-  - ⏭ Demo mode (Step 4): seed Streamlit from rqhq's exported `StreamingHistory*.json` so unlocked plots (circadian, taste-drift, plays/minutes per track) become viewable without needing each visitor to upload their own.
+  - ✅ Multi-source genre enrichment **data layer** (`hf_genres.py` + `cache.get_merged_genres`) — HF Spotify Tracks dataset (29.4k artists, 114 genres) + Last.fm tags + optional Spotify API genres, normalized + deduped + filtered. 1500-artist prewarm CLI lives in `content_scorer.py --prewarm`.
+  - ✅ Content-based fallback scorer (`content_scorer.py`) — wired into the sparse branch of `_compute_recs`. Synthetic HYUKOH+Malcolm Todd+Frank Ocean test produced clean indie-rock recs (Beck, Modest Mouse, Phoenix, MGMT). Won't trigger for rqhq but does for unmatched-heavy users.
+  - ⏭ **Plays/minutes per top track — pulled** after testing on friend's account: `plays_by_track.parquet` is rqhq-only data; even rare accidental matches show rqhq's plays on someone else's row. Only feasible inside demo mode framing.
+  - ⏭ Demo mode (Lane A #1): seed Streamlit from a server-side stored refresh token so unallowlisted visitors see rqhq's data without OAuth.
   - 🤔 Open question still alive: still no single merged rec list — Mixed-toggle (round-robin interleave) is the current answer, may revisit for finer control.
-- New runtime deps from Day 5: `umap-learn` (pulls numba+llvmlite, ~40MB), `networkx` (already present via scipy chain).
+- ✅ Project summary writeup drafted at [reports/project-summary.md](reports/project-summary.md). ~900 words, portfolio-ready prose; lead is "constraint-led design" (Last.fm 360K's age forced the two-tier classic+modern architecture, which then became the user-facing thesis).
+- New runtime deps from Day 5: `umap-learn` (pulls numba+llvmlite, ~40MB), `networkx` (already present via scipy chain). HF dataset adds `data/raw/hf_spotify_tracks.csv` (~20MB) + `data/processed/hf_artist_genres.parquet`.
 - Day 6: Deploy + privacy policy + Spotify dev dashboard config + screencast. See "Demo-mode deployment plan" below.
 
 ## Demo-mode deployment plan (Day 6)

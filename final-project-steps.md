@@ -36,20 +36,33 @@ Required by Spotify dashboard review. Demo-only flow has a simpler privacy story
 ### 5. Screencast / demo video (~1 hr)
 ~2-3 minute walkthrough: hero header, top artists, recs, UMAP, network. Fallback when live app is slow or down. Screen recording with QuickTime is fine.
 
-## Lane B — Polish (optional, ~1-2 days, can ship as v2)
+## Lane B — Polish
 
-### 6. Multi-source genre enrichment + content fallback scorer
-- The only Day 4 step that wasn't built. rqhq's account doesn't trigger the sparse fallback so it didn't block anything.
-- Real value: unlocks **genre coloring on the UMAP and similarity network**. Right now those clusters are positional but visually uninterpretable beyond seed/rec/modern color tiers.
-- Priority order from CLAUDE.md: HF Spotify Tracks dataset → Last.fm `getTopTags` → Spotify API genres → Wikidata.
+### 6. ~~Multi-source genre enrichment + content fallback scorer~~ ✅ MOSTLY SHIPPED
+- ✅ HF Spotify Tracks dataset → `hf_genres.py` (29.4k artists, 114 genres). Persisted lookup at `data/processed/hf_artist_genres.parquet`.
+- ✅ Multi-source merge in `cache.get_merged_genres` (HF + Last.fm tags + optional Spotify API). Tag normalization + dedup + denoising (HF count-1 entries dropped when stronger signal exists).
+- ✅ Content fallback scorer in `content_scorer.py`, wired into the sparse branch of `_compute_recs`. Validated on synthetic HYUKOH + Malcolm Todd + Frank Ocean profile → clean indie-rock recs.
+- ✅ Prewarm CLI: `uv run python -m spotify_recs.content_scorer --prewarm --n=1500` (~5 min one-time).
+- ❌ Genre coloring on UMAP / similarity network — tried, reverted. The 114→12 bucket map (`genre_buckets.py`) misclassifies enough artists at the rendered scale (Mos Def→electronic via 'trip hop', Snoop→funk/disco, etc.) that the colors mislead more than help. Module kept around for future retry with better mapping.
 
-### 7. Plays/minutes per top track in demo mode
-- Easy add: gate on `mode == "demo"`, pull from your existing parquet (loader.py output), join to top tracks by track id.
-- Mild interest payoff. Skip if pressed for time.
+### 7. ~~Plays/minutes per top track in demo mode~~ ❌ DEFERRED INDEFINITELY
+- Tried, pulled. The `plays_by_track.parquet` is rqhq's pre-Nov-2024 streaming export; joining it onto Spotify's `/me/top/tracks` for non-rqhq users produces misleading rows (one accidental track-name overlap shows rqhq's plays on someone else's listing). Only safe to bring back inside demo mode (Lane A #1) framing.
+- Spotify's API doesn't expose play counts — no API path makes this work for arbitrary users.
 
-### 8. Quarto portfolio page
-- Already in the plan. Project writeup links to deployed app + screencast.
-- Mention the recommender architecture, the proxy substitution insight, the UMAP/network visualizations.
+### 7b. Recommender tuning sliders ✅ SHIPPED (this wasn't on the original Lane B list)
+- α slider (`popularity_alpha`, 0–1): divides each candidate's ALS score by `‖item_emb‖^α`. 0 = raw ALS, 1 = popularity-blind.
+- λ slider (`mmr_lambda`, 0.5–1.0): greedy MMR re-ranking using ALS-cosine for similarity. <1.0 trades relevance for cluster diversity.
+- Both surfaced as live controls on the Recommendations page; cache key includes them. These now ARE the user-facing thesis ("New Soundz" = anti-popularity + anti-clustering).
+
+### 8. Live ticker on now-playing strip ✅ SHIPPED
+- `st.fragment(run_every="2s")` on `_now_playing_strip`. Progress bar + `m:ss / m:ss` caption tick without page rerun.
+- Track label "All time" → "Past year" (Spotify's `long_term` is officially "several years" but in practice ~1 year).
+
+### 9. Quarto portfolio page
+- ✅ Project summary draft at [reports/project-summary.md](reports/project-summary.md). ~900 words, structured for portfolio readers.
+- Lead is "constraint-led design": Last.fm 360K's 2008-09 vintage forced the classic+modern architecture, which then became the user-facing thesis ("expose listeners to under-listened music — whether 1972 deep cuts or 2024 indie").
+- Honest limits section calls out frozen ALS, capped vocab, Last.fm graph quality, no per-user playcounts.
+- TODO: convert to Quarto + add screenshots (UMAP makes the strongest hero image), publish on personal portfolio site.
 
 ## Cuts (don't bother)
 
