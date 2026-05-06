@@ -46,7 +46,7 @@ WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 TIME_RANGE_LABELS = {
     "short_term": "Last 4 weeks",
     "medium_term": "Last 6 months",
-    "long_term": "All time",
+    "long_term": "Past year",
 }
 
 SPOTIFY_GREEN = "#1DB954"
@@ -253,18 +253,33 @@ def _alias_filter(
     return is_alias
 
 
+@st.cache_resource(show_spinner=False)
+def _content_candidate_ids(n: int = 1500) -> list[int]:
+    """Top-N popular CF artists, used as the candidate pool for content fallback."""
+    from spotify_recs.content_scorer import top_popular_cf_ids
+    return top_popular_cf_ids(n=n)
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _compute_recs(
     user_id: str,
     short_artists: tuple,
     medium_artists: tuple,
     long_artists: tuple,
+    popularity_alpha: float = 0.0,
+    mmr_lambda: float = 1.0,
 ) -> dict:
     """Run the full route → fold-in → expand pipeline. Cached per user."""
     from spotify_recs.align import normalize_artist
     from spotify_recs.cache import ArtistCache
+    from spotify_recs.content_scorer import build_genre_profile, content_recommend
     from spotify_recs.recommender import recommend_for_history
-    from spotify_recs.routing import expand_to_modern, route_artists
+    from spotify_recs.routing import (
+        MEDIUM_TERM_WEIGHT,
+        SHORT_TERM_WEIGHT,
+        expand_to_modern,
+        route_artists,
+    )
 
     pipe, norm_to_id, _ = _load_recsys()
 
@@ -275,7 +290,34 @@ def _compute_recs(
         result = route_artists(short_dicts, medium_dicts, cache=cache, norm_to_id=norm_to_id)
 
     if len(result.weights) < 5:
-        return {"sparse": True, "n_routed": len(result.weights)}
+        # Content-based fallback: too few CF matches for trustworthy ALS recs.
+        # Build a genre profile from the seeds, score popular CF artists by
+        # genre overlap, return as `classic` so the rest of the UI works.
+        seeds_with_weights = [
+            (n, SHORT_TERM_WEIGHT) for n in short_artists
+        ] + [
+            (n, MEDIUM_TERM_WEIGHT) for n in medium_artists
+        ]
+        with ArtistCache() as cache:
+            profile = build_genre_profile(seeds_with_weights, cache=cache)
+            candidate_ids = _content_candidate_ids()
+            classic = content_recommend(
+                profile, candidate_ids, cache=cache, n=N_RECS,
+            )
+        return {
+            "sparse": True,
+            "mode": "content",
+            "n_routed": len(result.weights),
+            "classic": classic,
+            "classic_expanded": classic,
+            "modern": pd.DataFrame(columns=["name", "score", "supporting_cf_recs", "support_seeds"]),
+            "weights": {},
+            "n_direct": result.n_direct,
+            "n_proxy_only": result.n_proxy_only,
+            "n_unmatched": len(result.unmatched),
+            "n_long_excludes": 0,
+            "profile": profile,
+        }
 
     long_excludes = _direct_match_ids(long_artists, norm_to_id)
     extra = long_excludes - set(result.weights.keys())
@@ -283,10 +325,16 @@ def _compute_recs(
     all_seeds = short_artists + medium_artists + long_artists
     is_alias = _alias_filter(all_seeds)
 
-    classic = recommend_for_history(pipe, result.weights, n=N_RECS + 30, exclude_extra=extra)
+    classic = recommend_for_history(
+        pipe, result.weights, n=N_RECS + 30, exclude_extra=extra,
+        popularity_alpha=popularity_alpha, mmr_lambda=mmr_lambda,
+    )
     classic = classic[~classic["canonical_name"].apply(is_alias)].head(N_RECS).reset_index(drop=True)
 
-    expanded = recommend_for_history(pipe, result.weights, n=80, exclude_extra=extra)
+    expanded = recommend_for_history(
+        pipe, result.weights, n=80, exclude_extra=extra,
+        popularity_alpha=popularity_alpha, mmr_lambda=mmr_lambda,
+    )
     expanded = expanded[~expanded["canonical_name"].apply(is_alias)].head(50).reset_index(drop=True)
 
     user_norms = {normalize_artist(n) for n in all_seeds}
@@ -311,7 +359,17 @@ def _compute_recs(
     }
 
 
+def _format_mmss(ms: int) -> str:
+    s = max(int(ms // 1000), 0)
+    return f"{s // 60}:{s % 60:02d}"
+
+
+@st.fragment(run_every="2s")
 def _now_playing_strip(sp: spotipy.Spotify) -> None:
+    """Live-updating now-playing strip. The fragment re-runs every 2s without
+    forcing the rest of the page to recompute, so the progress bar advances
+    in near-real-time and pauses/track-changes get picked up automatically.
+    """
     try:
         playing = sp.current_user_playing_track()
     except Exception:
@@ -334,7 +392,10 @@ def _now_playing_strip(sp: spotipy.Spotify) -> None:
     with cols[1]:
         status = "▶ Now playing" if playing.get("is_playing") else "⏸ Paused"
         st.markdown(f"**{status}** — {item['name']} · {artists}")
-        st.caption(item["album"]["name"])
+        st.caption(
+            f"{item['album']['name']}  ·  "
+            f"{_format_mmss(progress_ms)} / {_format_mmss(duration_ms)}"
+        )
         st.progress(pct)
 
 
@@ -605,18 +666,18 @@ def _umap_chart(proj: dict, seed_names: list[str], rec_names: list[str]) -> None
 
 NODE_STYLE = {
     "seed": {
-        "color": "#1DB954", 
-        "halo": "rgba(29, 185, 84, 0.27)", 
+        "color": "#1DB954",
+        "halo": "rgba(29, 185, 84, 0.27)",
         "label": "Your seeds"
     },
     "classic": {
-        "color": "#F59E0B", 
-        "halo": "rgba(245, 158, 11, 0.27)", 
+        "color": "#F59E0B",
+        "halo": "rgba(245, 158, 11, 0.27)",
         "label": "Classic recs"
     },
     "modern": {
-        "color": "#22D3EE", 
-        "halo": "rgba(34, 211, 238, 0.27)", 
+        "color": "#22D3EE",
+        "halo": "rgba(34, 211, 238, 0.27)",
         "label": "Modern recs"
     },
 }
@@ -857,14 +918,53 @@ def _render_recommendations(sp: spotipy.Spotify) -> None:
     medium_names = tuple(a["name"] for a in medium)
     long_names = tuple(a["name"] for a in long_t)
 
+    sl1, sl2 = st.columns(2)
+    with sl1:
+        popularity_alpha = st.slider(
+            "Popularity dampening (α)",
+            min_value=0.0, max_value=1.0, value=0.5, step=0.1,
+            help=(
+                "Divides each candidate's ALS score by ‖item_emb‖^α so popular "
+                "artists stop crowding the list. 0 = raw ALS (popularity-biased). "
+                "1 = pure cosine (popularity-blind). 0.5 = moderate dampening."
+            ),
+        )
+    with sl2:
+        mmr_lambda = st.slider(
+            "Diversity (MMR λ)",
+            min_value=0.5, max_value=1.0, value=1.0, step=0.05,
+            help=(
+                "Greedy re-ranking that trades relevance for variety. 1.0 = no "
+                "diversity step (pure relevance). 0.7 = same-cluster picks get "
+                "demoted in favor of new directions. 0.5 = aggressively diverse, "
+                "expect cross-genre surprises."
+            ),
+        )
+
     with st.spinner("Routing your top artists and running fold-in inference..."):
-        recs = _compute_recs(me["id"], short_names, medium_names, long_names)
+        recs = _compute_recs(
+            me["id"], short_names, medium_names, long_names,
+            popularity_alpha=popularity_alpha, mmr_lambda=mmr_lambda,
+        )
 
     if recs.get("sparse"):
+        if recs.get("mode") == "content" and not recs["classic"].empty:
+            st.warning(
+                f"Only {recs['n_routed']} of your top artists could be matched into the CF "
+                "vocab — falling back to content-based recommendations (genre overlap with "
+                "your top artists' merged genre tags)."
+            )
+            classic = recs["classic"]
+            classic_items = [
+                {"name": r.canonical_name, "score": float(r.score), "source": "content"}
+                for r in classic.itertuples(index=False)
+            ]
+            _rec_list(classic_items)
+            return
         st.warning(
-            f"Only {recs['n_routed']} of your top artists could be matched into the CF vocab. "
-            "The recommender needs at least 5 to produce trustworthy results. "
-            "Content-based fallback isn't built yet (Day 4 step 4)."
+            f"Only {recs['n_routed']} of your top artists could be matched into the CF vocab "
+            "and content-fallback found no scoreable candidates — pre-warm the merged-genre "
+            "cache for the top-popular CF artists to enable fallback."
         )
         return
 

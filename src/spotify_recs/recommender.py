@@ -20,6 +20,7 @@ from __future__ import annotations
 import pickle
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from lenskit import Pipeline, recommend, topn_pipeline
 from lenskit.als import ImplicitMFScorer
@@ -115,6 +116,8 @@ def recommend_for_history(
     n: int = 20,
     exclude_seen: bool = True,
     exclude_extra: set[int] | None = None,
+    popularity_alpha: float = 0.0,
+    mmr_lambda: float = 1.0,
 ) -> pd.DataFrame:
     """Top-N recs for a new (cold-start) user via fold-in inference.
 
@@ -125,6 +128,18 @@ def recommend_for_history(
     `exclude_seen`: drop the user's own input artists from the result.
     `exclude_extra`: additional artist_ids to drop (e.g., long_term top artists
         the user listens to but that don't contribute to the user vector).
+
+    `popularity_alpha`: dampens ALS popularity bias by dividing each candidate's
+        score by `||item_emb||^alpha`. 0 = no dampening (raw ALS). 1 = pure
+        cosine (popularity-blind). 0.5 is a reasonable middle. Pulls a wider
+        candidate pool (200) before re-ranking so dampening can surface items
+        that were buried in the raw ranking.
+
+    `mmr_lambda`: Maximal Marginal Relevance trade-off. 1.0 = pure relevance
+        (no diversity step). <1.0 enables greedy MMR re-ranking: each pick
+        maximizes `λ·relevance − (1−λ)·max_cosine_to_already_picked` in ALS
+        embedding space. 0.7 is a typical "diverse but still on-target" pick;
+        0.5 is aggressively diverse.
     """
     item_ids = list(artist_weights.keys())
     weights = [float(artist_weights[i]) for i in item_ids]
@@ -134,17 +149,72 @@ def recommend_for_history(
     scorer = pipeline.node("scorer").component
     scorer.config.use_ratings = True
 
-    extra = exclude_extra or set()
-    buffer = (len(item_ids) if exclude_seen else 0) + len(extra)
-    items: ItemList = recommend(pipeline, query, n=n + buffer)
+    # When dampening or MMR-reranking, pull a wide pool so re-ranking has
+    # room to lift previously-buried candidates above the popular ones and
+    # MMR has enough material to diversify across.
+    needs_wide_pool = popularity_alpha > 0 or mmr_lambda < 1.0
+    pool_size = 200 if needs_wide_pool else (n + (len(item_ids) if exclude_seen else 0) + len(exclude_extra or set()))
+    items: ItemList = recommend(pipeline, query, n=pool_size)
     df = _itemlist_to_df(items)
 
+    if popularity_alpha > 0 and len(df):
+        embeddings = scorer.item_embeddings
+        items_vocab = scorer.items
+        rows = items_vocab.numbers(df["item_id"].tolist())
+        norms = np.linalg.norm(embeddings[rows], axis=1)
+        df = df.assign(score=df["score"] / np.maximum(norms ** popularity_alpha, 1e-8))
+        df = df.sort_values("score", ascending=False).reset_index(drop=True)
+
+    if mmr_lambda < 1.0 and len(df) > 1:
+        df = _mmr_rerank(df, scorer, mmr_lambda, n_select=min(n * 3, len(df)))
+
+    extra = exclude_extra or set()
     drop_ids: set[int] = set(extra)
     if exclude_seen:
         drop_ids.update(item_ids)
     if drop_ids:
         df = df[~df["item_id"].isin(drop_ids)]
     return df.head(n).reset_index(drop=True)
+
+
+def _mmr_rerank(
+    df: pd.DataFrame,
+    scorer,
+    mmr_lambda: float,
+    n_select: int,
+) -> pd.DataFrame:
+    """Greedy MMR over `df["score"]` using ALS-cosine for similarity.
+
+    Returns a re-ordered DataFrame of length `min(n_select, len(df))`. The
+    ordering is the MMR pick order, so taking `.head(n)` after exclusions
+    yields the diverse-relevant top-N.
+    """
+    items_vocab = scorer.items
+    pool_ids = df["item_id"].tolist()
+    rows = items_vocab.numbers(pool_ids)
+    pool_emb = scorer.item_embeddings[rows]
+    norms = np.linalg.norm(pool_emb, axis=1, keepdims=True)
+    pool_unit = pool_emb / np.clip(norms, 1e-8, None)
+
+    relevance = df["score"].to_numpy()
+    selected: list[int] = []
+    remaining = list(range(len(df)))
+
+    # First pick is pure-relevance argmax.
+    first = int(np.argmax(relevance))
+    selected.append(first)
+    remaining.remove(first)
+
+    while len(selected) < n_select and remaining:
+        rem_arr = np.array(remaining)
+        sim_to_picked = pool_unit[rem_arr] @ pool_unit[selected].T
+        max_sim = sim_to_picked.max(axis=1)
+        mmr_scores = mmr_lambda * relevance[rem_arr] - (1.0 - mmr_lambda) * max_sim
+        best_local = int(np.argmax(mmr_scores))
+        selected.append(int(rem_arr[best_local]))
+        remaining.pop(best_local)
+
+    return df.iloc[selected].reset_index(drop=True)
 
 
 def _itemlist_to_df(items: ItemList, drop_junk: bool = True) -> pd.DataFrame:
