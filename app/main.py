@@ -527,9 +527,21 @@ def _umap_chart(proj: dict, seed_names: list[str], rec_names: list[str]) -> None
 
 
 NODE_STYLE = {
-    "seed":    {"color": "#1DB954", "halo": "#1DB95444", "label": "Your seeds"},
-    "classic": {"color": "#F59E0B", "halo": "#F59E0B44", "label": "Classic recs"},
-    "modern":  {"color": "#22D3EE", "halo": "#22D3EE44", "label": "Modern recs"},
+    "seed": {
+        "color": "#1DB954", 
+        "halo": "rgba(29, 185, 84, 0.27)", 
+        "label": "Your seeds"
+    },
+    "classic": {
+        "color": "#F59E0B", 
+        "halo": "rgba(245, 158, 11, 0.27)", 
+        "label": "Classic recs"
+    },
+    "modern": {
+        "color": "#22D3EE", 
+        "halo": "rgba(34, 211, 238, 0.27)", 
+        "label": "Modern recs"
+    },
 }
 
 
