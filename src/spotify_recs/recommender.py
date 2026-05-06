@@ -114,6 +114,7 @@ def recommend_for_history(
     artist_weights: dict[int, float],
     n: int = 20,
     exclude_seen: bool = True,
+    exclude_extra: set[int] | None = None,
 ) -> pd.DataFrame:
     """Top-N recs for a new (cold-start) user via fold-in inference.
 
@@ -122,6 +123,8 @@ def recommend_for_history(
     `use_ratings=True` on the scorer config (we flip it here for inference).
 
     `exclude_seen`: drop the user's own input artists from the result.
+    `exclude_extra`: additional artist_ids to drop (e.g., long_term top artists
+        the user listens to but that don't contribute to the user vector).
     """
     item_ids = list(artist_weights.keys())
     weights = [float(artist_weights[i]) for i in item_ids]
@@ -131,11 +134,17 @@ def recommend_for_history(
     scorer = pipeline.node("scorer").component
     scorer.config.use_ratings = True
 
-    items: ItemList = recommend(pipeline, query, n=n + (len(item_ids) if exclude_seen else 0))
+    extra = exclude_extra or set()
+    buffer = (len(item_ids) if exclude_seen else 0) + len(extra)
+    items: ItemList = recommend(pipeline, query, n=n + buffer)
     df = _itemlist_to_df(items)
+
+    drop_ids: set[int] = set(extra)
     if exclude_seen:
-        df = df[~df["item_id"].isin(item_ids)].head(n).reset_index(drop=True)
-    return df
+        drop_ids.update(item_ids)
+    if drop_ids:
+        df = df[~df["item_id"].isin(drop_ids)]
+    return df.head(n).reset_index(drop=True)
 
 
 def _itemlist_to_df(items: ItemList, drop_junk: bool = True) -> pd.DataFrame:

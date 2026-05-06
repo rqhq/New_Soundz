@@ -195,8 +195,71 @@ def _umap_project_with_user(seed_ids: list[int], rec_ids: list[int]) -> dict:
     }
 
 
+def _direct_match_ids(names: tuple[str, ...], norm_to_id: dict[str, int]) -> set[int]:
+    """Exact + fuzzy CF matches for an artist-name list. No proxy substitution."""
+    from rapidfuzz import fuzz, process
+
+    from spotify_recs.align import normalize_artist
+    from spotify_recs.routing import FUZZY_THRESHOLD_DEFAULT
+
+    norm_keys = list(norm_to_id.keys())
+    out: set[int] = set()
+    for name in names:
+        n = normalize_artist(name)
+        if not n:
+            continue
+        if n in norm_to_id:
+            out.add(norm_to_id[n])
+            continue
+        hit = process.extractOne(n, norm_keys, scorer=fuzz.ratio, score_cutoff=FUZZY_THRESHOLD_DEFAULT)
+        if hit:
+            out.add(norm_to_id[hit[0]])
+    return out
+
+
+def _alias_filter(
+    seed_names: tuple[str, ...], min_len: int = 3
+):
+    """Returns a predicate `is_alias(name) -> bool`.
+
+    Drops a candidate name if any seed's normalized form appears as a
+    word-bounded substring inside the candidate's normalized form (asymmetric:
+    seed ⊂ candidate). Tests both the spaced and no-space variant of each seed
+    so e.g. seed "D'Angelo" (norm "d angelo") catches Last.fm's "DAngelo and
+    the Vanguard" (norm "dangelo and the vanguard"). Skips seeds shorter than
+    `min_len` to avoid false hits like "Sade" matching mid-word.
+    """
+    import re
+
+    from spotify_recs.align import normalize_artist
+
+    seed_norms = {normalize_artist(n) for n in seed_names}
+    variants: set[str] = set()
+    for s in seed_norms:
+        if not s or len(s) < min_len:
+            continue
+        variants.add(s)
+        compact = s.replace(" ", "")
+        if len(compact) >= min_len:
+            variants.add(compact)
+    patterns = [re.compile(rf"\b{re.escape(v)}\b") for v in variants]
+
+    def is_alias(name: str) -> bool:
+        nn = normalize_artist(name)
+        if not nn:
+            return False
+        return any(p.search(nn) for p in patterns)
+
+    return is_alias
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def _compute_recs(user_id: str, short_artists: tuple, medium_artists: tuple) -> dict:
+def _compute_recs(
+    user_id: str,
+    short_artists: tuple,
+    medium_artists: tuple,
+    long_artists: tuple,
+) -> dict:
     """Run the full route → fold-in → expand pipeline. Cached per user."""
     from spotify_recs.align import normalize_artist
     from spotify_recs.cache import ArtistCache
@@ -214,23 +277,37 @@ def _compute_recs(user_id: str, short_artists: tuple, medium_artists: tuple) -> 
     if len(result.weights) < 5:
         return {"sparse": True, "n_routed": len(result.weights)}
 
-    classic = recommend_for_history(pipe, result.weights, n=N_RECS)
-    expanded = recommend_for_history(pipe, result.weights, n=50)
-    user_norms = {normalize_artist(n) for n in (short_artists + medium_artists)}
+    long_excludes = _direct_match_ids(long_artists, norm_to_id)
+    extra = long_excludes - set(result.weights.keys())
+
+    all_seeds = short_artists + medium_artists + long_artists
+    is_alias = _alias_filter(all_seeds)
+
+    classic = recommend_for_history(pipe, result.weights, n=N_RECS + 30, exclude_extra=extra)
+    classic = classic[~classic["canonical_name"].apply(is_alias)].head(N_RECS).reset_index(drop=True)
+
+    expanded = recommend_for_history(pipe, result.weights, n=80, exclude_extra=extra)
+    expanded = expanded[~expanded["canonical_name"].apply(is_alias)].head(50).reset_index(drop=True)
+
+    user_norms = {normalize_artist(n) for n in all_seeds}
     with ArtistCache() as cache:
         modern = expand_to_modern(
             expanded, cache=cache, norm_to_id=norm_to_id,
-            exclude_norms=user_norms, n=N_RECS,
+            exclude_norms=user_norms, n=N_RECS + 30,
         )
+    if not modern.empty:
+        modern = modern[~modern["name"].apply(is_alias)].head(N_RECS).reset_index(drop=True)
 
     return {
         "sparse": False,
         "weights": result.weights,
         "classic": classic,
+        "classic_expanded": expanded,
         "modern": modern,
         "n_direct": result.n_direct,
         "n_proxy_only": result.n_proxy_only,
         "n_unmatched": len(result.unmatched),
+        "n_long_excludes": len(extra),
     }
 
 
@@ -775,11 +852,13 @@ def _render_recommendations(sp: spotipy.Spotify) -> None:
     me = sp.current_user()
     short = _fetch_top_artists(sp, "short_term", limit=TOP_LIMIT)
     medium = _fetch_top_artists(sp, "medium_term", limit=TOP_LIMIT)
+    long_t = _fetch_top_artists(sp, "long_term", limit=TOP_LIMIT)
     short_names = tuple(a["name"] for a in short)
     medium_names = tuple(a["name"] for a in medium)
+    long_names = tuple(a["name"] for a in long_t)
 
     with st.spinner("Routing your top artists and running fold-in inference..."):
-        recs = _compute_recs(me["id"], short_names, medium_names)
+        recs = _compute_recs(me["id"], short_names, medium_names, long_names)
 
     if recs.get("sparse"):
         st.warning(
@@ -789,10 +868,11 @@ def _render_recommendations(sp: spotipy.Spotify) -> None:
         )
         return
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Direct CF matches", recs["n_direct"])
     c2.metric("Proxy-only artists", recs["n_proxy_only"])
     c3.metric("Unmatched", recs["n_unmatched"])
+    c4.metric("Excluded (long-term)", recs.get("n_long_excludes", 0))
 
     st.divider()
 
@@ -845,7 +925,7 @@ def _render_recommendations(sp: spotipy.Spotify) -> None:
     with st.spinner("Building similarity network..."):
         net = _build_similarity_network(
             seed_ids=list(recs["weights"].keys()),
-            classic_df=classic,
+            classic_df=recs["classic_expanded"],
             modern_df=modern,
             weights=recs["weights"],
         )
