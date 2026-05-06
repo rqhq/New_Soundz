@@ -18,6 +18,7 @@ dependencies = [
     # Viz
     "plotly>=5.22",
     "altair>=5.3",
+    "umap-learn>=0.5",
     # App (day 5)
     "streamlit>=1.36",
     # Notebook

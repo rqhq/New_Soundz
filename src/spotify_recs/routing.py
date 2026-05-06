@@ -195,6 +195,7 @@ def expand_to_modern(
 
     accumulated: dict[str, float] = {}
     support_count: dict[str, int] = {}
+    support_seeds: dict[str, list[tuple[str, float]]] = {}
     display_name: dict[str, str] = {}
 
     for row in cf_recs.itertuples(index=False):
@@ -212,17 +213,20 @@ def expand_to_modern(
             contrib = seed_score * float(sim_score)
             accumulated[norm] = accumulated.get(norm, 0.0) + contrib
             support_count[norm] = support_count.get(norm, 0) + 1
+            support_seeds.setdefault(norm, []).append((seed_name, float(sim_score)))
             display_name.setdefault(norm, canonical)
 
     if not accumulated:
-        return pd.DataFrame(columns=["name", "score", "supporting_cf_recs"])
+        return pd.DataFrame(
+            columns=["name", "score", "supporting_cf_recs", "support_seeds"]
+        )
 
     df = pd.DataFrame(
         [
-            (display_name[k], v, support_count[k])
+            (display_name[k], v, support_count[k], support_seeds[k])
             for k, v in accumulated.items()
         ],
-        columns=["name", "score", "supporting_cf_recs"],
+        columns=["name", "score", "supporting_cf_recs", "support_seeds"],
     )
     df = df.sort_values("score", ascending=False).head(n).reset_index(drop=True)
     return df
