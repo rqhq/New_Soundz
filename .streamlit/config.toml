@@ -6,5 +6,3 @@ secondaryBackgroundColor = "#181818"
 textColor = "#FFFFFF"
 font = "sans serif"
 
-[server]
-port = 8888
