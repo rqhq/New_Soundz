@@ -128,37 +128,29 @@ Workflow: `uv run python -m spotify_recs.<module>`. Always `uv run`, never bare 
   - ✅ Multi-source genre enrichment **data layer** (`hf_genres.py` + `cache.get_merged_genres`) — HF Spotify Tracks dataset (29.4k artists, 114 genres) + Last.fm tags + optional Spotify API genres, normalized + deduped + filtered. 1500-artist prewarm CLI lives in `content_scorer.py --prewarm`.
   - ✅ Content-based fallback scorer (`content_scorer.py`) — wired into the sparse branch of `_compute_recs`. Synthetic HYUKOH+Malcolm Todd+Frank Ocean test produced clean indie-rock recs (Beck, Modest Mouse, Phoenix, MGMT). Won't trigger for rqhq but does for unmatched-heavy users.
   - ⏭ **Plays/minutes per top track — pulled** after testing on friend's account: `plays_by_track.parquet` is rqhq-only data; even rare accidental matches show rqhq's plays on someone else's row. Only feasible inside demo mode framing.
-  - ⏭ Demo mode (Lane A #1): seed Streamlit from a server-side stored refresh token so unallowlisted visitors see rqhq's data without OAuth.
   - 🤔 Open question still alive: still no single merged rec list — Mixed-toggle (round-robin interleave) is the current answer, may revisit for finer control.
 - ✅ Project summary writeup drafted at [reports/project-summary.md](reports/project-summary.md). ~900 words, portfolio-ready prose; lead is "constraint-led design" (Last.fm 360K's age forced the two-tier classic+modern architecture, which then became the user-facing thesis).
 - New runtime deps from Day 5: `umap-learn` (pulls numba+llvmlite, ~40MB), `networkx` (already present via scipy chain). HF dataset adds `data/raw/hf_spotify_tracks.csv` (~20MB) + `data/processed/hf_artist_genres.parquet`.
-- Day 6: Deploy + privacy policy + Spotify dev dashboard config + screencast. See "Demo-mode deployment plan" below.
+- ✅ Day 6 (deployed):
+  - ✅ **Demo mode** wired into [app/main.py](app/main.py): `_get_demo_client(refresh_token)` builds a Spotify client from a server-side refresh token (no OAuth click). Session-state `mode` toggle defaults to `"demo"` if `SPOTIFY_REFRESH_TOKEN` is set; sidebar offers "Connect your own Spotify" → `"personal"` and "← Back to demo" round-trip. Demo banner renders on every page in demo mode.
+  - ✅ **Off-repo ALS pickle** via GitHub Release asset. `_ensure_als_pickle()` lazy-downloads `models/als.pkl` from `SPOTIFY_ALS_PICKLE_URL` on first boot (with a progress bar), cached via `@st.cache_resource`. Asset URL: `https://github.com/rqhq/New_Soundz/releases/download/v0.1/als.pkl`.
+  - ✅ **Privacy + ToS pages** at `app/pages/` — auto-discovered by Streamlit, public URLs `/Privacy_Policy` and `/Terms_of_Service` registered with the Spotify dashboard.
+  - ✅ **Editorial denylist** (`recommender.is_denylisted()`) — regex `\br[^a-z]{0,3}kelly\b` filters R. Kelly + collabs without false-positives on Kelly Clarkson / Kelly Rowland / Robert Kelly. Applied at all 3 rec output paths: `recommender._itemlist_to_df`, `routing.expand_to_modern`, `content_scorer.content_recommend`.
+  - ✅ **Top-genres bar fixed** to use `cache.get_merged_genres` (HF + Last.fm + Spotify) instead of just `a["genres"]`. Spotify alone returns empty for ~22/50 of any modern listener's top artists; merged source gives meaningful counts (10-20 range vs 1-4 before).
+  - ✅ **"New Soundz" wordmark** on the Overview page (gradient Spotify-green → mint), `page_title` updated.
+  - ✅ **Live deploy** at `https://<rqhq's-subdomain>.streamlit.app` — first boot ~60-90s (pickle download + load + UMAP fit), subsequent boots fast.
+  - ⏭ Screencast (deferred to next session).
+  - ⏭ Spotify Extension review for production access (2-6 wk, accept dev-mode 25-user cap for now).
 
-## Demo-mode deployment plan (Day 6)
+## Day 6 deployment lessons (don't relearn)
 
-Goal: a public URL where unallowlisted visitors immediately see rqhq's analytics/recs/network without going through OAuth. Allowlisted users (the other 24) can optionally flip to "Connect your own Spotify."
-
-### Architecture
-- **Server-side stored refresh token** for rqhq. OAuth happens once locally → refresh token persisted in Streamlit Cloud secrets (`SPOTIFY_REFRESH_TOKEN`). At app boot, hydrate a Spotipy client from it; Spotipy auto-refreshes the access token when it expires.
-- **Two modes, one app.** Default `mode="demo"` (always-as-rqhq). A "Connect your Spotify" button flips `mode="personal"` and triggers the existing OAuth flow. Stored in `st.session_state`.
-- **Code change is small** — ~50 lines: `_get_demo_client(refresh_token)`, the mode toggle, a "DEMO — viewing rqhq's data" banner.
-
-### Deployment gotchas
-- **The 388MB ALS pickle is the biggest problem.** Streamlit Cloud free tier has repo size + slow cold-start constraints. Options, in order of preference:
-  1. Host on HuggingFace Hub or S3, download to a temp dir at boot, cache via `@st.cache_resource`. Works around repo-size limit.
-  2. Git LFS (eats LFS quota).
-  3. Retrain with `embedding_size=32` (halves the pickle to ~190MB) — last resort, hurts rec quality.
-- **Cold-start latency**: first visitor pays for pickle download (10-30s) + load (5-10s) + UMAP fit (10s) + first Last.fm cache misses. Need an explicit "spinning up..." UX, not a blank screen.
-- **Spotify redirect URI must match exactly.** Register `https://<app>.streamlit.app/callback` in the dashboard for prod. Keep `http://127.0.0.1:8888/callback` for local dev (Spotify allows multiple).
-- **Privacy policy + ToS pages required** for Spotify dashboard review. Demo-only flow has a simpler privacy story (only your data) but the pages are still mandatory.
-- **All visitors share rqhq's Spotify API quota** (~hundreds req/min app-wide). With `@st.cache_data` aggressively warming, this is fine for portfolio-tier traffic.
-- **Sqlite cache concurrency**: multi-reader is fine, writes serialize. Cache misses are rare post-warmup — won't bite at low traffic.
-
-### Suggested attack order
-1. Add `_get_demo_client(refresh_token)` + `mode` toggle, test locally with refresh token in `.env` (~1 hr).
-2. Move ALS pickle off-repo, add lazy-download path (~1 hr).
-3. Deploy to Streamlit Cloud, register prod redirect URI, end-to-end run (~1 hr).
-4. Privacy policy + ToS + screencast (~half day, mostly content).
+- **`.streamlit/config.toml` must NOT pin `server.port`** — Streamlit Cloud's health check probes the default 8501. Pinning to 8888 (the local-dev workaround for macOS AirPlay) caused the deploy's first boot to fail with `connection refused on 127.0.0.1:8501`. Local dev now needs `--server.port=8888` explicitly on the CLI.
+- **`.spotify_token_cache.json` is contaminated by whoever last OAuth'd.** When testing on a friend's account first, then trying to swap to your own, the streamlit "Connect your own Spotify" button must `TOKEN_CACHE_PATH.unlink(missing_ok=True)` — otherwise it re-validates the friend's still-valid token and silently routes you back as them. Plus the Spotify-side browser cookie auto-logs you in as whoever's signed into accounts.spotify.com — incognito or `accounts.spotify.com/en/logout` first.
+- **`get_demo_refresh_token.py`** bypasses both contamination paths: standalone OAuth via auth-code flow on a separate cache file, writes the resulting refresh token straight to `.env`. Use this when you need a clean refresh token for any account.
+- **The 3 small data files (`artist_lookup.parquet`, `artist_cache.sqlite`, `hf_artist_genres.parquet`, ~9 MB total) are force-added** to the repo despite `data/processed/*` being gitignored. They're needed at runtime; only `interactions.parquet` (79 MB, training only) stays out.
+- **Streamlit secrets are TOML.** Common breakage: missing quotes around the value, smart quotes from a doc app, line break inside a long token value. Refresh tokens have no special chars — if the TOML parser complains, it's quote/paste shape.
+- **GitHub Release public download URLs work without auth** (`https://github.com/<owner>/<repo>/releases/download/<tag>/<asset>`) — `curl -IL` confirms 200 + `application/octet-stream`. No `gh` API token needed at runtime.
+- **`@st.cache_resource` on `_load_recsys` means the pickle download happens once per worker lifetime**, not per session. Subsequent visitors hit a warm worker instantly.
 
 ## Working preferences
 
