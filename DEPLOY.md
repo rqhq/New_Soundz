@@ -76,6 +76,13 @@ https://<your-app>.streamlit.app/callback
 
 Keep `http://127.0.0.1:8888/callback` registered too — useful for local dev.
 
+Spotify also requires public URLs for a Privacy Policy and Terms of Service.
+Both are scaffolded as Streamlit pages — paste these into the dashboard:
+```
+Privacy Policy URL:  https://<your-app>.streamlit.app/Privacy_Policy
+Terms of Service URL: https://<your-app>.streamlit.app/Terms_of_Service
+```
+
 ## 6. First-boot expectations
 
 Cold start will be slow (~60-90s):
