@@ -67,16 +67,21 @@ src/spotify_recs/
   hf_genres.py    # Day 5: HF Spotify Tracks dataset → artist→[(genre,count)] lookup (DONE)
   content_scorer.py  # Day 5: content fallback for sparse users + cache prewarm CLI (DONE)
   genre_buckets.py   # Day 5: 114→12 high-level bucket map (UNUSED — kept for future)
+  get_demo_refresh_token.py  # Day 6: one-off OAuth CLI that writes SPOTIFY_REFRESH_TOKEN to .env (DONE)
 notebooks/        # Exploration
 app/
-  main.py         # Day 5: Streamlit entrypoint — Overview / Analytics / Recommendations pages
+  main.py         # Day 5/6: Streamlit entrypoint — Overview / Analytics / Recommendations + demo-mode banner
+  pages/
+    1_Privacy_Policy.py    # Day 6: required by Spotify dashboard review
+    2_Terms_of_Service.py  # Day 6: required by Spotify dashboard review
 .streamlit/
-  config.toml     # Dark Spotify theme + server.port=8888
+  config.toml     # Dark Spotify theme. NO server.port — Streamlit Cloud needs the default 8501
 reports/
   project-summary.md  # Portfolio writeup draft (Quarto-ready markdown)
-models/           # als.pkl (388MB pickled trained pipeline)
-data/raw/         # Spotify exports + lastfm_360k.parquet
-data/processed/   # parquet outputs + artist_cache.sqlite
+DEPLOY.md         # Day 6: step-by-step Streamlit Cloud deploy runbook
+models/           # als.pkl (370MB) — gitignored; hosted as GitHub Release asset, lazy-downloaded at boot
+data/raw/         # Spotify exports + lastfm_360k.parquet (gitignored, training only)
+data/processed/   # 3 small files force-added for runtime: artist_lookup.parquet, artist_cache.sqlite, hf_artist_genres.parquet. interactions.parquet is gitignored (training only).
 ```
 
 Workflow: `uv run python -m spotify_recs.<module>`. Always `uv run`, never bare python.
