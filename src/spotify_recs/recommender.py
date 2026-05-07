@@ -39,6 +39,22 @@ JUNK_NORM_NAMES = frozenset({
     "anonymous", "traditional",
 })
 
+# Editorial denylist — artists we don't want surfaced anywhere in the app
+# regardless of CF score. Match against the lowercased canonical name with
+# word boundaries so collaborations ("r. kelly & jay-z") are caught too.
+import re as _re
+
+_DENYLIST_PATTERNS: tuple[_re.Pattern, ...] = (
+    _re.compile(r"\br[^a-z]{0,3}kelly\b"),
+)
+
+
+def is_denylisted(name: str) -> bool:
+    if not name:
+        return False
+    n = name.lower()
+    return any(p.search(n) for p in _DENYLIST_PATTERNS)
+
 # ALS hyperparameters — defaults from LensKit, untuned. Day 6 candidate for tuning.
 EMBEDDING_SIZE = 64
 EPOCHS = 10
@@ -231,6 +247,7 @@ def _itemlist_to_df(items: ItemList, drop_junk: bool = True) -> pd.DataFrame:
     df = df.merge(lookup, left_on="item_id", right_on="artist_id", how="left")
     if drop_junk:
         df = df[~df["canonical_name"].str.lower().isin(JUNK_NORM_NAMES)]
+    df = df[~df["canonical_name"].apply(is_denylisted)]
     return df[["item_id", "canonical_name", "score"]].reset_index(drop=True)
 
 

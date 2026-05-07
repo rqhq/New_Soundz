@@ -27,7 +27,7 @@ from rapidfuzz import fuzz, process
 
 from spotify_recs.align import normalize_artist
 from spotify_recs.cache import ArtistCache
-from spotify_recs.recommender import ARTIST_LOOKUP_PATH
+from spotify_recs.recommender import ARTIST_LOOKUP_PATH, is_denylisted
 
 PROXY_DECAY_DEFAULT = 0.3
 FUZZY_THRESHOLD_DEFAULT = 95
@@ -209,6 +209,8 @@ def expand_to_modern(
         for _, canonical, sim_score in similars:
             norm = normalize_artist(canonical)
             if not norm or norm in norm_to_id or norm in exclude_norms:
+                continue
+            if is_denylisted(canonical):
                 continue
             contrib = seed_score * float(sim_score)
             accumulated[norm] = accumulated.get(norm, 0.0) + contrib

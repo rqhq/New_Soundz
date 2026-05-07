@@ -30,9 +30,27 @@ from spotipy.oauth2 import SpotifyOAuth
 
 load_dotenv(REPO_ROOT / ".env")
 
-CLIENT_ID = os.environ["SPOTIFY_CLIENT_ID"]
-CLIENT_SECRET = os.environ["SPOTIFY_CLIENT_SECRET"]
-REDIRECT_URI = os.environ["SPOTIFY_REDIRECT_URI"]
+
+def _secret(key: str, default: str | None = None) -> str | None:
+    """Look up a config value in env first, then Streamlit secrets.
+
+    Local dev uses .env; Streamlit Cloud uses st.secrets. Strip whitespace
+    because the project's .env has " value" (leading space) on some lines.
+    """
+    if key in os.environ and os.environ[key].strip():
+        return os.environ[key].strip()
+    try:
+        if key in st.secrets:
+            return str(st.secrets[key]).strip()
+    except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
+        pass
+    return default
+
+
+CLIENT_ID = _secret("SPOTIFY_CLIENT_ID")
+CLIENT_SECRET = _secret("SPOTIFY_CLIENT_SECRET")
+REDIRECT_URI = _secret("SPOTIFY_REDIRECT_URI")
+DEMO_REFRESH_TOKEN = _secret("SPOTIFY_REFRESH_TOKEN")
 SCOPES = "user-top-read user-read-recently-played user-read-private user-read-currently-playing"
 
 # Streamlit sessions can be lost when the browser navigates to Spotify and back,
@@ -40,7 +58,7 @@ SCOPES = "user-top-read user-read-recently-played user-read-private user-read-cu
 # only — fine for a single-user laptop setup. .gitignored.
 TOKEN_CACHE_PATH = REPO_ROOT / ".spotify_token_cache.json"
 
-st.set_page_config(page_title="Spotify Recs", layout="wide")
+st.set_page_config(page_title="New Soundz", layout="wide")
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 TIME_RANGE_LABELS = {
@@ -70,6 +88,34 @@ def _build_auth_manager() -> SpotifyOAuth:
         ),
         open_browser=False,
     )
+
+
+@st.cache_resource(show_spinner="Connecting to Spotify (demo)...")
+def _get_demo_client(refresh_token: str) -> spotipy.Spotify:
+    """Build a Spotify client from a stored refresh token. No OAuth click.
+
+    Uses an in-memory cache handler seeded with the refresh token; spotipy's
+    auth_manager will refresh the access token automatically on first use and
+    again whenever it expires (~1hr).
+    """
+    auth = SpotifyOAuth(
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        redirect_uri=REDIRECT_URI or "http://127.0.0.1:8888/callback",
+        scope=SCOPES,
+        cache_handler=spotipy.cache_handler.MemoryCacheHandler(
+            token_info={
+                "refresh_token": refresh_token,
+                "access_token": "",
+                "expires_at": 0,
+                "scope": SCOPES,
+                "token_type": "Bearer",
+            }
+        ),
+        open_browser=False,
+    )
+    auth.refresh_access_token(refresh_token)
+    return spotipy.Spotify(auth_manager=auth)
 
 
 def _get_authenticated_client() -> spotipy.Spotify | None:
@@ -131,11 +177,60 @@ TOP_LIMIT = 50
 UMAP_BACKGROUND_SAMPLE = 1500
 
 
+def _ensure_als_pickle() -> Path:
+    """Make sure models/als.pkl exists locally; download from a public URL if not.
+
+    The pickle is 388MB — too big for the GitHub repo or Streamlit Cloud's
+    repo-size budget. In production we host it as a GitHub Release asset (or
+    any public URL via SPOTIFY_ALS_PICKLE_URL) and lazy-download on first
+    boot. The downloaded file lives in models/, which is gitignored, and
+    persists for the lifetime of the Streamlit Cloud worker.
+    """
+    from spotify_recs.recommender import MODEL_PATH
+
+    target = REPO_ROOT / MODEL_PATH
+    if target.exists() and target.stat().st_size > 1_000_000:
+        return target
+
+    url = _secret("SPOTIFY_ALS_PICKLE_URL")
+    if not url:
+        raise RuntimeError(
+            f"{target} is missing and SPOTIFY_ALS_PICKLE_URL is not set. "
+            "Either build the model locally (`uv run python -m spotify_recs.recommender`) "
+            "or configure the download URL in .env / Streamlit secrets."
+        )
+
+    import requests
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".pkl.part")
+
+    progress = st.progress(0.0, text="Downloading recommender model (~370 MB)...")
+    with requests.get(url, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("content-length") or 0)
+        downloaded = 0
+        with tmp.open("wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total:
+                    progress.progress(min(downloaded / total, 1.0),
+                                      text=f"Downloading recommender model: "
+                                           f"{downloaded / 1e6:.0f} / {total / 1e6:.0f} MB")
+    tmp.replace(target)
+    progress.empty()
+    return target
+
+
 @st.cache_resource(show_spinner="Loading recommender model...")
 def _load_recsys():
     from spotify_recs.recommender import load_pipeline
     from spotify_recs.routing import build_norm_to_id
 
+    _ensure_als_pickle()
     pipe = load_pipeline()
     norm_to_id = build_norm_to_id()
     lookup = pd.read_parquet(REPO_ROOT / "data/processed/artist_lookup.parquet")
@@ -450,6 +545,16 @@ def _artist_card_row(artists: list[dict], n: int = 8) -> None:
 
 def _render_overview(sp: spotipy.Spotify) -> None:
     me = sp.current_user()
+    st.markdown(
+        '<div style="font-size:3.5rem;font-weight:800;letter-spacing:-0.02em;'
+        'background:linear-gradient(90deg,#1DB954 0%,#1ED760 50%,#A7F3D0 100%);'
+        '-webkit-background-clip:text;-webkit-text-fill-color:transparent;'
+        'background-clip:text;line-height:1;margin-bottom:0.25rem;">'
+        'New Soundz</div>'
+        '<div style="color:#B3B3B3;font-size:0.95rem;margin-bottom:1.5rem;">'
+        'Personal Spotify analytics and artist discovery.</div>',
+        unsafe_allow_html=True,
+    )
     _hero_header(sp, me)
 
     st.markdown("&nbsp;", unsafe_allow_html=True)
@@ -529,17 +634,33 @@ def _top_tracks_tabs(sp: spotipy.Spotify) -> None:
             )
 
 
+@st.cache_data(ttl=3600, show_spinner="Pulling merged genre tags (HF + Last.fm)...")
+def _merged_genre_counts(artist_names: tuple[str, ...]) -> list[tuple[str, int]]:
+    """Per-artist merged genres → genre→count.
+
+    Spotify's own /artists genres are sparse (≈half empty for any modern
+    listener). cache.get_merged_genres falls back to the HF taxonomy and
+    Last.fm tags, both denser. Cache hits are instant; misses pay one
+    Last.fm call per artist (~22 of 50 first time, ~4-5s wall clock).
+    """
+    from spotify_recs.cache import ArtistCache
+
+    counter: Counter[str] = Counter()
+    with ArtistCache() as cache:
+        for name in artist_names:
+            for g in cache.get_merged_genres(name):
+                counter[g] += 1
+    return counter.most_common(15)
+
+
 def _top_genres_bar(sp: spotipy.Spotify) -> None:
     st.subheader("Top genres (from your top 50 artists, last 6 months)")
     artists = _fetch_top_artists(sp, "medium_term", limit=50)
-    counter: Counter[str] = Counter()
-    for a in artists:
-        for g in a.get("genres", []):
-            counter[g] += 1
-    if not counter:
-        st.caption("Spotify returned no genre tags for these artists.")
+    names = tuple(a["name"] for a in artists)
+    top = _merged_genre_counts(names)
+    if not top:
+        st.caption("No genre tags available for these artists.")
         return
-    top = counter.most_common(15)
     df = pd.DataFrame(top, columns=["genre", "count"]).iloc[::-1]
     fig = px.bar(
         df, x="count", y="genre", orientation="h", height=420,
@@ -1045,10 +1166,41 @@ def _render_analytics(sp: spotipy.Spotify) -> None:
     _top_tracks_tabs(sp)
 
 
+def _demo_banner() -> None:
+    st.markdown(
+        '<div style="background:linear-gradient(90deg,#1DB95433,#1DB95411);'
+        'border-left:4px solid #1DB954;padding:0.6rem 1rem;border-radius:6px;'
+        'margin-bottom:1rem;font-size:0.92rem;">'
+        '<b>DEMO MODE</b> — viewing rqhq\'s Spotify data. '
+        'Use the sidebar to connect your own account if you\'re on the allowlist.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
-    sp = _get_authenticated_client()
-    if sp is None:
-        return
+    if "mode" not in st.session_state:
+        st.session_state.mode = "demo" if DEMO_REFRESH_TOKEN else "personal"
+
+    sp: spotipy.Spotify | None = None
+    if st.session_state.mode == "demo":
+        if not DEMO_REFRESH_TOKEN:
+            st.error(
+                "Demo mode requires SPOTIFY_REFRESH_TOKEN in your .env or "
+                "Streamlit secrets. Run the OAuth flow once and copy the "
+                "refresh token from .spotify_token_cache.json."
+            )
+            return
+        try:
+            sp = _get_demo_client(DEMO_REFRESH_TOKEN)
+        except Exception as e:
+            st.error(f"Failed to refresh demo Spotify token: {e}")
+            return
+    else:
+        sp = _get_authenticated_client()
+        if sp is None:
+            _personal_sidebar_back_button()
+            return
 
     with st.sidebar:
         st.markdown("### Navigation")
@@ -1058,12 +1210,34 @@ def main() -> None:
             label_visibility="collapsed",
         )
         st.divider()
-        if st.button("Log out"):
-            for key in ("auth_manager", "authenticated"):
-                st.session_state.pop(key, None)
-            TOKEN_CACHE_PATH.unlink(missing_ok=True)
-            st.cache_data.clear()
-            st.rerun()
+
+        if st.session_state.mode == "demo":
+            st.caption("You're viewing rqhq's data.")
+            if st.button("Connect your own Spotify"):
+                for key in ("auth_manager", "authenticated"):
+                    st.session_state.pop(key, None)
+                TOKEN_CACHE_PATH.unlink(missing_ok=True)
+                st.session_state.mode = "personal"
+                st.cache_data.clear()
+                st.rerun()
+        else:
+            st.caption("You're viewing your own data.")
+            if DEMO_REFRESH_TOKEN and st.button("← Back to demo"):
+                for key in ("auth_manager", "authenticated"):
+                    st.session_state.pop(key, None)
+                TOKEN_CACHE_PATH.unlink(missing_ok=True)
+                st.session_state.mode = "demo"
+                st.cache_data.clear()
+                st.rerun()
+            if st.button("Log out"):
+                for key in ("auth_manager", "authenticated"):
+                    st.session_state.pop(key, None)
+                TOKEN_CACHE_PATH.unlink(missing_ok=True)
+                st.cache_data.clear()
+                st.rerun()
+
+    if st.session_state.mode == "demo":
+        _demo_banner()
 
     if page == "Overview":
         _render_overview(sp)
@@ -1071,6 +1245,17 @@ def main() -> None:
         _render_analytics(sp)
     else:
         _render_recommendations(sp)
+
+
+def _personal_sidebar_back_button() -> None:
+    """Sidebar button shown on the OAuth landing page so visitors can bail
+    back to demo mode without completing the auth flow."""
+    if not DEMO_REFRESH_TOKEN:
+        return
+    with st.sidebar:
+        if st.button("← Back to demo"):
+            st.session_state.mode = "demo"
+            st.rerun()
 
 
 if __name__ == "__main__":

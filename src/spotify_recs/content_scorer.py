@@ -24,7 +24,12 @@ import pandas as pd
 
 from spotify_recs.align import normalize_artist
 from spotify_recs.cache import ArtistCache
-from spotify_recs.recommender import ARTIST_LOOKUP_PATH, JUNK_NORM_NAMES, load_pipeline
+from spotify_recs.recommender import (
+    ARTIST_LOOKUP_PATH,
+    JUNK_NORM_NAMES,
+    is_denylisted,
+    load_pipeline,
+)
 
 
 def build_genre_profile(
@@ -105,6 +110,8 @@ def content_recommend(
             continue
         name = name_by_id.get(aid)
         if not name:
+            continue
+        if is_denylisted(name):
             continue
 
         if skip_uncached:
