@@ -1,4 +1,4 @@
-# New Soundz — A Music Recommender Built Around Its Constraints
+# New Soundz: A Music Recommender Built Around Its Constraints
 
 ## TL;DR
 
@@ -10,17 +10,17 @@ Most music recommenders push you toward what's popular and what's adjacent. Spot
 
 ## The Constraint That Shaped Everything
 
-To do collaborative filtering at any reasonable quality, you need a large dataset of who-listens-to-whom. The only public dataset of that scale is **Last.fm 360K** — a frozen snapshot from 2008–2009 capturing 358,872 users and 267,739 artists. There is no modern public equivalent. Spotify, Apple Music, and YouTube don't release this kind of data.
+To do collaborative filtering at any reasonable quality, you need a large dataset of who-listens-to-whom. The only public dataset of that scale is **Last.fm 360K**: a frozen snapshot from 2008–2009 capturing 358,872 users and 267,739 artists. I could not find an accessible modern public equivalent. Spotify, Apple Music, and YouTube do not release this kind of data.
 
-That dataset's age is the project's central design problem. Half the artists a modern listener cares about — Kendrick Lamar, Frank Ocean, Tyler the Creator, anyone post-2009 — simply don't exist in its vocabulary. Pretending the data was current would have produced a broken recommender. Acknowledging the constraint and designing around it produced an architecture with a coherent thesis.
+That dataset's age is the project's central design problem. Half the artists a modern listener may care about (i.e. Kendrick Lamar, Frank Ocean, Tyler the Creator, anyone post-2009, etc.),simply don't exist in its vocabulary. Pretending the data was current would have produced a broken recommender. Acknowledging the constraint and designing around it produced a coherent architecture.
 
 ## The Architecture: Two Coordinate Systems
 
 The system makes recommendations in two passes, each playing a different role:
 
-**Classic recs** are produced by the CF backbone — an ALS model trained on Last.fm 360K — using fold-in inference: the user's Spotify top artists become the seed history, and the model returns artists from its (older) vocabulary that listeners with similar taste also enjoyed. These are deliberately *not* current — they're catalog surfacing. Think of them as the system's answer to *"what older artists do people who listen to what you listen to also love?"*
+**Classic recs** are produced by the CF backbone which is an ALS model trained on Last.fm 360K using fold-in inference. This means the user's Spotify top artists become the seed history and the model returns artists from its (older) vocabulary that listeners with similar taste also enjoyed. These are deliberately *not* current, instead they're catalog surfacing. Think of them as the system's answer to *"what older artists do people who listen to what you listen to also love?"*
 
-**Modern recs** are produced by walking outward from the classic recs through Last.fm's similarity graph. For each older artist the CF model surfaces, the system fetches its similar-artist list, filters out anything already in the CF vocabulary, and ranks the remainder by how strongly multiple classic recs collectively endorse it. The older artists serve as coordinate markers rather than destinations — proxies that locate where in the musical landscape the listener is, so we can identify *current* artists in the same neighborhood.
+**Modern recs** are produced by walking outward from the classic recs through Last.fm's similarity graph. For each older artist the CF model surfaces, the system fetches its similar-artist list, filters out anything already in the CF vocabulary, and ranks the remainder by how strongly multiple classic recs collectively endorse it. The older artists serve as coordinate markers rather than destinations which are proxies that locate where in the musical landscape the listener is. We can identify current artists in the same neighborhood.
 
 Together, the two passes give listeners both kinds of "new": new-to-them deep catalog, and new-period contemporary artists.
 
@@ -43,7 +43,7 @@ These aren't internal hyperparameters tucked away in a config file — they're s
 
 ## What I'd Do With More Time
 
-The most interesting next step is replacing or augmenting the frozen Last.fm 360K backbone with newer co-listening data. Even a smaller, fresher dataset would close the post-2009 gap and let the modern-recs path be a refinement rather than a workaround. Beyond that: implicit-feedback signals (skips, replays) to make the recommender adaptive, and a content-based scorer that uses genre embeddings rather than the categorical genre tags currently powering the sparse-user fallback.
+The most interesting next step is replacing or augmenting the frozen Last.fm 360K backbone with newer co-listening data. Even a smaller yet newer dataset would close the post-2009 gap and let the modern-recs path be a refinement rather than a workaround. Beyond that, implicit-feedback signals (skips, replays) to make the recommender adaptive, and a content-based scorer that uses genre embeddings rather than the categorical genre tags, which is currently powering the sparse-user fallback.
 
 ## Tech Stack
 
