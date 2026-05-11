@@ -30,3 +30,7 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Claude Code working files
+CLAUDE.md
+.claude/
