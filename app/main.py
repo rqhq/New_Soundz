@@ -514,7 +514,7 @@ def _hero_header(sp: spotipy.Spotify, me: dict) -> None:
             f'<div style="font-size:3rem;font-weight:700;line-height:1.1;">'
             f'{me["display_name"]}</div>'
             f'<div style="color:#B3B3B3;margin-top:0.5rem;">'
-            f'{followers:,} followers · @{me["id"]}</div>',
+            f'{followers:,} followers</div>',
             unsafe_allow_html=True,
         )
 
